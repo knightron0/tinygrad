@@ -662,6 +662,10 @@ class TrackedRewriteContext:
   sink: UOp                                                                                         # the sink passed into the rewrite
   matches: List[Tuple[UOp, Optional[UOp], Optional[UPat], float]] = field(default_factory=list)     # all matches of sparents
 
+def get_contexts():
+    global contexts
+    return contexts
+
 rewrite_stack: List[Tuple[Any, List[TrackedRewriteContext]]] = []
 contexts: List[Tuple[Any, List[TrackedRewriteContext]]] = []
 _rewrite_cnt: Dict[str, int] = {}

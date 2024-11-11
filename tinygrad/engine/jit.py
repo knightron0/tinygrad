@@ -13,6 +13,7 @@ from tinygrad.engine.memory import _internal_memory_planner
 from tinygrad.nn.state import get_parameters
 from dataclasses import dataclass
 from weakref import WeakKeyDictionary
+from tinygrad.ops import get_contexts
 
 class GraphException(Exception): pass
 
@@ -292,4 +293,4 @@ class TinyJit(Generic[ReturnType]):
       ret = self.captured(input_buffers, var_vals)
 
     self.cnt += 1
-    return ret
+    return ret, get_contexts()
