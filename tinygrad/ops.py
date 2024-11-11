@@ -654,7 +654,7 @@ class PatternMatcher:
 
 # *** tracking pattern matcher ***
 
-TRACK_MATCH_STATS = ContextVar("TRACK_MATCH_STATS", 2 if getenv("VIZ") else 0)
+TRACK_MATCH_STATS = ContextVar("TRACK_MATCH_STATS", 2)
 match_stats:Dict[UPat, List[Union[int, float]]] = dict()
 @dataclass(frozen=True)
 class TrackedRewriteContext:
@@ -665,6 +665,10 @@ class TrackedRewriteContext:
 def get_contexts():
     global contexts
     return contexts
+  
+def set_contexts(new_contexts):
+    global contexts
+    contexts = new_contexts
 
 rewrite_stack: List[Tuple[Any, List[TrackedRewriteContext]]] = []
 contexts: List[Tuple[Any, List[TrackedRewriteContext]]] = []
@@ -715,12 +719,13 @@ if TRACK_MATCH_STATS:
   def print_match_stats():
     if TRACK_MATCH_STATS >= 2:
       with open(fn:=temp("rewrites.pkl"), "wb") as f:
-        print(f"rewrote {len(contexts)} graphs and matched {sum(len(r.matches) for _,x in contexts for r in x)} times, saved to {fn}")
+        if not getenv("VERIFY_TEST", 1):
+          print(f"rewrote {len(contexts)} graphs and matched {sum(len(r.matches) for _,x in contexts for r in x)} times, saved to {fn}")
         pickle.dump(contexts, f)
     if getenv("VIZ"):
       os.environ["VIZ"] = "0"
       os.execv(sys.executable, [sys.executable] + [os.path.join(os.path.dirname(__file__), ".", "viz", "serve.py"), temp("rewrites.pkl")])
-    if getenv("PRINT_MATCH_STATS", 1):
+    if getenv("PRINT_MATCH_STATS", 1) and not getenv("VERIFY_TEST", 1):
       ret = [0,0,0.0,0.0]
       for k,v in sorted(list(match_stats.items()), key=lambda x: x[1][2]+x[1][3]):
         loc_str = f"{k.location[0].split('/')[-1]}:{k.location[1]}"
