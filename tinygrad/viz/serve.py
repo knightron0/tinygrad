@@ -135,7 +135,11 @@ if __name__ == "__main__":
   multiprocessing.current_process().name = "VizProcess"    # disallow opening of devices
   st = time.perf_counter()
   print("*** viz is starting")
-  with open(sys.argv[1], "rb") as f: contexts: List[Tuple[Any, List[TrackedRewriteContext]]] = pickle.load(f)
+  with open(sys.argv[1], "rb") as f: 
+    contexts: List[Tuple[Any, List[TrackedRewriteContext]]] = pickle.load(f)
+    if "PKL_SAVE" in os.environ:
+      pickle.dump(contexts, open(os.environ.get("PKL_SAVE"), "wb"))
+      print("*** saving pkl file")
   print("*** unpickled saved rewrites")
   kernels = get_metadata(contexts)
   if getenv("FUZZ_VIZ"):
