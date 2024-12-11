@@ -663,13 +663,13 @@ class TrackedRewriteContext:
   matches: List[Tuple[UOp, Optional[UOp], Optional[UPat], float]] = field(default_factory=list)     # all matches of sparents
 
 def get_contexts():
-    global contexts
-    return contexts
-  
-def set_contexts(new_contexts):
-    global contexts
-    contexts = new_contexts
+  global contexts
+  return contexts
 
+def clear_contexts():
+  global contexts
+  contexts = []
+  
 rewrite_stack: List[Tuple[Any, List[TrackedRewriteContext]]] = []
 contexts: List[Tuple[Any, List[TrackedRewriteContext]]] = []
 _rewrite_cnt: Dict[str, int] = {}

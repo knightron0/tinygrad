@@ -13,7 +13,6 @@ from tinygrad.engine.memory import _internal_memory_planner
 from tinygrad.nn.state import get_parameters
 from dataclasses import dataclass
 from weakref import WeakKeyDictionary
-from tinygrad.ops import get_contexts, set_contexts
 
 class GraphException(Exception): pass
 
@@ -223,8 +222,6 @@ class TinyJit(Generic[ReturnType]):
 
   def __call__(self, *args, **kwargs) -> ReturnType:
     input_buffers, var_vals, names, st_vars_dtype_device = _prepare_jit_inputs(args, kwargs)
-    old_contexts = get_contexts()
-    set_contexts([])
     if not JIT or self.cnt == 0:
       # jit ignore
       assert self.fxn is not None
@@ -295,6 +292,4 @@ class TinyJit(Generic[ReturnType]):
       ret = self.captured(input_buffers, var_vals)
 
     self.cnt += 1
-    rewrites = get_contexts()
-    set_contexts(old_contexts + rewrites)
-    return ret, rewrites
+    return ret
