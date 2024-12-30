@@ -2015,6 +2015,26 @@ class TestView(unittest.TestCase):
     run_schedule(s)
     self.assertEqual(other_child.tolist(), [2, 3, 4])
 
+  def test_simple_merge_bufs(self):
+    a = Tensor.full((4, 4), 2.).contiguous()
+    b = a*1
+    self.assertIsNot(a.lazydata, b.lazydata)
+    run_schedule(check_schedule([a, b], 1))
+    # the device buffer is the same
+    self.assertIs(b.lazydata.realized, a.lazydata.realized)
+    # these aren't equal because of uop mutability!
+    with self.assertRaises(AssertionError):
+      self.assertIs(b.lazydata, a.lazydata)
+
+  def test_uop_parent_late_folding(self):
+    a = Tensor([1, 2, 3, 4])
+    b = (a*0).contiguous()
+    run_schedule(check_schedule(b, 1))
+    # the COPY never happens
+    self.assertIsNone(a.lazydata.realized)
+    self.assertIsNotNone(b.lazydata.realized)
+    self.assertEqual(b.tolist(), [0, 0, 0, 0])
+
 def tensor_rewrite(t) -> UOp: return graph_rewrite(t.lazydata.base, remove_movement_ops+symbolic)
 class TestBigGraph(unittest.TestCase):
   def test_sink_childless_const(self):
