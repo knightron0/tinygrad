@@ -423,6 +423,10 @@ def replace_contiguous(ctx:ScheduleContext, alu:UOp):
     if (replace_src:=ctx.contiguous.get(s, None)) is not None: new_src[i] = replace_src
   if tuple(new_src) != alu.src: return alu.replace(src=tuple(new_src))
 
+def sink_outputs(root:UOp):
+  if len(outs:=tuple(x.base for x in root.src if x.base.realized is None and not is_constant(x.base))) == 0: return UOp(Ops.NOOP)
+  return None if outs == root.src else UOp.sink(*outs)
+
 ops_folding = symbolic_simple+PatternMatcher([
   # op with size 0 is zero
   (UPatScheduled(), lambda b,to_store,base: base.const_like(0) if base.size == 0 else None),
@@ -445,6 +449,8 @@ ops_folding = symbolic_simple+PatternMatcher([
   # support for using a contiguous permuted view instead of the parent view if one exists
   (UPatScheduled(Ops.CONTIGUOUS, name="contig"), found_contiguous),
   (UPat(GroupOp.ALU, name="alu"), replace_contiguous),
+  # remove consts and realized buffers from SINK
+  (UPat(Ops.SINK, name="root"), sink_outputs),
 ])
 
 # ** buffer merging
@@ -477,32 +483,29 @@ merge_bufs = PatternMatcher([
 
 # ** this decides which ops get realized
 
-def realize(ctx:ScheduleContext, b:UOp, to_store:UOp, **kwargs) -> None: ctx.realizes[b] = to_store
+def realize(ctx:ScheduleContext, b:UOp, **kwargs) -> None: ctx.realizes[b] = b
 
 def realize_view(ctx:ScheduleContext, view:UOp, src:UOp, b:UOp, **kwargs) -> None:
   if src.st is None: return None
   st = unwrap(view.st)
   # fold simple pads
   if len(st.views) == 1 and (m:=st.views[-1].mask) is not None and all_int(src.shape) and resolve(prod(src.shape) >= prod([y-x for x,y in m])):
-    return None if can_pad(src, ctx.realizes, set()) else realize(ctx, b, src)
+    return None if can_pad(src, ctx.realizes, set()) else realize(ctx, b)
   # early realize before expand
-  if resolve(prod(src.shape) < prod(st.shape)): return realize(ctx, b, src)
+  if resolve(prod(src.shape) < prod(st.shape)): return realize(ctx, b)
   # otherwise safety check pads
-  return None if (all(v.mask is None for v in st.views) or can_pad(src, ctx.realizes, set())) else realize(ctx, b, src)
+  return None if (all(v.mask is None for v in st.views) or can_pad(src, ctx.realizes, set())) else realize(ctx, b)
 
-def fold_img_cast(ctx:ScheduleContext, xb:UOp, view:UOp, b:UOp, to_cast:UOp, **kwargs) -> UOp|None:
-  if not isinstance(xb.dtype, ImageDType) or b not in ctx.realizes or xb not in ctx.realizes or uval(to_cast).op in GroupOp.Meta: return None
-  del ctx.realizes[b]
+def fold_img_cast(xb:UOp, view:UOp, b:UOp, to_cast:UOp, **kwargs) -> UOp|None:
+  if not isinstance(xb.dtype, ImageDType) or uval(to_cast).op in GroupOp.Meta: return None
   return to_cast.view(unwrap(view.st))
 
-def sink_outputs(ctx:ScheduleContext, sink:UOp) -> UOp|None:
-  new_src = tuple(x.base for x in sink.src if x.base.realized is None and not is_constant(x.base))
-  for x in new_src: realize(ctx, x.buf_uop, x)
-  return None if new_src == sink.src else UOp(Ops.NOOP) if len(new_src) == 0 else UOp.sink(*new_src)
+def realize_sink(ctx:ScheduleContext, sink:UOp) -> None:
+  for x in sink.src: realize(ctx, x.buf_uop)
 
 do_realize = PatternMatcher([
   # always realize sinked ops
-  (UPat(Ops.SINK, name="sink"), sink_outputs),
+  (UPat(Ops.SINK, name="sink"), realize_sink),
   # always realize meta ops
   (UPatScheduled({Ops.ASSIGN, Ops.CONTIGUOUS, *GroupOp.Meta}), realize),
   # realize before expand or unsafe pad ops
@@ -569,22 +572,18 @@ remove_movement_ops = PatternMatcher([
 
 @track_rewrites(named=True)
 def create_schedule_with_vars(outs:list[UOp], skip_check:bool=not __debug__) -> tuple[list[ScheduleItem], dict[Variable, int]]:
-  if not skip_check: type_verify(list(UOp.sink(*outs).toposort), extra_spec=tensor_uop_spec)
-  # to_uop is removing (many) of the movement ops
-  sink = add_buffers(UOp.sink(*outs), ctx:=ScheduleContext(), cache={})
-  # const folding and fusion
-  sink = graph_rewrite(sink, remove_movement_ops+ops_folding+do_realize, ctx)
-  sink = graph_rewrite(sink, merge_bufs, ctx)
-  # create the scheduler context
-  graph_rewrite(sink, create_ctx, ctx)
-  # group realizes into kernels
+  sink = UOp.sink(*outs)
+  if not skip_check: type_verify(list(sink.toposort), extra_spec=tensor_uop_spec)
+  # recurse the graph and add buffer uops, this is removing (many) of the movement ops
+  sink = add_buffers(sink, ctx:=ScheduleContext(), cache={})
+  # constant folding + movement ops, merge buffers that folded to the same uop
+  sink = graph_rewrite(sink, remove_movement_ops+ops_folding+merge_bufs, ctx)
+  # break buffers into kernels + late grouping
+  graph_rewrite(sink, do_realize+create_ctx, ctx)
   store_groups = group_realizes(ctx)
   graph_rewrite(sink, break_sched, ctx)
-  # preschedule realize groups
-  prescheduled: list[ScheduleItem] = []
-  for store_uops in store_groups:
-    if len(stores:=[ctx.realizes[u] for u in store_uops if ctx.realizes[u].op is Ops.STORE]) != 0:
-      prescheduled.append(schedule_uop(UOp.sink(*stores), ctx))
+  # preschedule kernels
+  prescheduled = [schedule_uop(UOp.sink(*[ctx.realizes[u] for u in group]), ctx) for group in store_groups]
   # do BFS
   schedule_targets = {out:si for si in prescheduled for out in si.outputs}
   graph: defaultdict[ScheduleItem, list[ScheduleItem]] = defaultdict(list)
