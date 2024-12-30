@@ -457,10 +457,6 @@ ops_folding = symbolic_simple+PatternMatcher([
 
 def merge(ctx:ScheduleContext, v1:UOp, b1:UOp, v2:UOp, b2:UOp) -> UOp:
   assert v1.st is not None and v2.st is not None and v1.st == v2.st, f"implicit movementop {v1.st} {v2.st}"
-  # if b2 is realized also realize b1
-  if b2 in ctx.realizes:
-    ctx.realizes[b1] = b1
-    del ctx.realizes[b2]
   # ops referring to b2 now ref to b1
   ctx.tensor_uops[b1] += ctx.tensor_uops[b2]
   del ctx.tensor_uops[b2]
