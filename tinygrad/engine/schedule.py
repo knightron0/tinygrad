@@ -569,22 +569,20 @@ remove_movement_ops = PatternMatcher([
 
 @track_rewrites(named=True)
 def create_schedule_with_vars(outs:list[UOp], skip_check:bool=not __debug__) -> tuple[list[ScheduleItem], dict[Variable, int]]:
-  if not skip_check: type_verify(list(UOp.sink(*outs).toposort), extra_spec=tensor_uop_spec)
+  sink = UOp.sink(*outs)
+  if not skip_check: type_verify(list(sink.toposort), extra_spec=tensor_uop_spec)
   # to_uop is removing (many) of the movement ops
-  sink = add_buffers(UOp.sink(*outs), ctx:=ScheduleContext(), cache={})
+  sink = add_buffers(sink, ctx:=ScheduleContext(), cache={})
   # const folding and fusion
-  sink = graph_rewrite(sink, remove_movement_ops+ops_folding+do_realize, ctx)
-  sink = graph_rewrite(sink, merge_bufs, ctx)
+  sink = graph_rewrite(sink, remove_movement_ops+ops_folding, ctx)
+  sink = graph_rewrite(sink, do_realize+merge_bufs, ctx)
   # create the scheduler context
   graph_rewrite(sink, create_ctx, ctx)
   # group realizes into kernels
   store_groups = group_realizes(ctx)
   graph_rewrite(sink, break_sched, ctx)
   # preschedule realize groups
-  prescheduled: list[ScheduleItem] = []
-  for store_uops in store_groups:
-    if len(stores:=[ctx.realizes[u] for u in store_uops if ctx.realizes[u].op is Ops.STORE]) != 0:
-      prescheduled.append(schedule_uop(UOp.sink(*stores), ctx))
+  prescheduled = [schedule_uop(UOp.sink(*[ctx.realizes[u] for u in group]), ctx) for group in store_groups]
   # do BFS
   schedule_targets = {out:si for si in prescheduled for out in si.outputs}
   graph: defaultdict[ScheduleItem, list[ScheduleItem]] = defaultdict(list)
