@@ -2,7 +2,7 @@ import time, math, unittest, functools
 import numpy as np
 from typing import List, Callable
 import torch
-from tinygrad.helpers import getenv, IMAGE, DEBUG, CI, Context, TRANSCENDENTAL
+from tinygrad.helpers import getenv, IMAGE, DEBUG, CI, TRANSCENDENTAL, Context, ContextVar
 from tinygrad import Tensor, Device, dtypes
 from tinygrad.tensor import _to_np_dtype
 from tinygrad.device import is_dtype_supported
@@ -11,7 +11,7 @@ if CI:
   import warnings
   warnings.filterwarnings("ignore", message="Non-empty compiler output encountered")
 
-FORWARD_ONLY = getenv("FORWARD_ONLY", 0)
+FORWARD_ONLY = ContextVar("FORWARD_ONLY", 0)
 PRINT_TENSORS = getenv("PRINT_TENSORS", 0)
 
 def helper_test_op(shps, torch_fxn, tinygrad_fxn=None, atol=1e-6, rtol=1e-3, grad_atol=1e-4, grad_rtol=1e-3,
@@ -2032,6 +2032,14 @@ class TestOps(unittest.TestCase):
     helper_test_op(None,
       lambda x,w: torch.nn.functional.conv2d(torch.nn.functional.pad(x, p),w).relu(),
       lambda x,w: Tensor.conv2d(x,w,padding=p).relu(), vals=[[[[[2.,3.]]]], [[[[1.]]]]])
+
+  @unittest.expectedFailure # failing after e2f87ecf
+  def test_simple_padding_conv2d_noopt(self):
+    p = (1,1,1,1)
+    with Context(NOOPT=1, FORWARD_ONLY=0):
+      helper_test_op(None,
+        lambda x,w: torch.nn.functional.conv2d(torch.nn.functional.pad(x, p),w).relu(),
+        lambda x,w: Tensor.conv2d(x,w,padding=p).relu(), vals=[[[[[2.,3.]]]], [[[[1.]]]]])
 
   def test_asymmetric_padding_conv2d(self):
     for p in [(0,1,0,1), (2,1,2,1), (2,0,2,1)]:
