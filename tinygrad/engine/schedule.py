@@ -2,7 +2,7 @@ import sys, atexit, functools, pickle
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from tinygrad.ops import GroupOp, UOp, Ops, PatternMatcher, UPat, Variable, can_pad, graph_rewrite, resolve, track_rewrites, view_left, merge_views
-from tinygrad.ops import identity_element, buffers, symbolic_simple, type_verify
+from tinygrad.ops import identity_element, buffers, symbolic_simple, type_verify, graph_rewrite_map
 from tinygrad.helpers import Context, Metadata, all_int, all_same, colored, diskcache_put, merge_dicts, prod, dedup, getenv, unwrap
 from tinygrad.helpers import FUSE_CONV_BW, FUSE_ARANGE, DEBUG, ContextVar
 from tinygrad.dtype import DType, ImageDType, dtypes
@@ -126,7 +126,7 @@ def add_buffers(buf:UOp, ctx:ScheduleContext, cache:dict[UOp, UOp]) -> UOp:
   # track the underlying tensor uop for this op
   ctx.tensor_uops[buf_uop] = [buf]
   # (early) bufferize
-  cache[buf] = ret = UOp(Ops.VIEW, dtype.base, (buf_uop, op.alu(Ops.CONTIGUOUS) if buf.forced_realize else op), buf.st)
+  cache[buf] = ret = UOp(Ops.VIEW, dtype.base, (buf_uop, op), buf.st)
   return ret
 
 # **** AST graph rewrite
@@ -353,7 +353,7 @@ def group_realizes(ctx:ScheduleContext) -> list[list[UOp]]:
   # maybe fuse arange with its children
   for rbuf in reduce_of_const:
     group = {tr:None for tr,rop in reduce_for_op.items() if rop is rbuf}
-    if any(luop.forced_realize for tr in group for luop in ctx.tensor_uops[tr]): continue
+    if any(luop.op is Ops.CONTIGUOUS for tr in group for luop in ctx.tensor_uops[tr]): continue
     kernel_children = {c for tr in group for c in ctx.children[tr] if uval(ctx.allbufs[c]).op not in {Ops.COPY, Ops.BUFFER_VIEW}}
     if len(kernel_children) == 0: continue
     for tr in group: del ctx.realizes[tr]
@@ -382,7 +382,7 @@ def simplify_reduceop(reduce:UOp, x:UOp) -> UOp|None:
     case _: return None
   return reduce.const_like(ret)
 
-def found_contiguous(ctx:ScheduleContext, contig:UOp, base:UOp, b:UOp):
+def found_contiguous(ctx:ScheduleContext, contig:UOp):
   if contig.src[0].op is Ops.VIEW and len(contig.src[0].src):
     old_base = contig.src[0].src[0]
     if old_base.op is Ops.VIEW and (sti:=unwrap(contig.src[0].st).invert(old_base.shape)) is not None: ctx.contiguous[old_base] = base.view(sti)
@@ -394,9 +394,8 @@ def replace_contiguous(ctx:ScheduleContext, alu:UOp):
 
 ops_folding = symbolic_simple+PatternMatcher([
   # op with size 0 is zero
-  (UPatScheduled(), lambda b,to_store,base: base.const_like(0) if base.size == 0 else None),
-  # if the uop folded to a CONST we can delete the BUFFER
-  (UPatScheduled(Ops.CONST, name="const"), lambda b,base,const: base.const_like(const.const_arg)),
+  (UPat(set(Ops), name="root"),
+   lambda root: root.const_like(0) if (r:=root.base).st is not None and root.size == 0 and (r.op is not Ops.CONST or r.const_arg != 0) else None),
   # DETACH is a NOOP here
   (UPat(Ops.DETACH, name="detach"), lambda detach: detach.src[0]),
   # reduce of size 0 is the identity element
@@ -407,42 +406,14 @@ ops_folding = symbolic_simple+PatternMatcher([
   # CONST doesn't need COPY
   (UPat(Ops.COPY, src=(UPat(), UPat.cvar("x"),)), lambda x: x),
   # no double COPY
-  (UPat(Ops.COPY, name="copy", src=(UPat.var("dest"), UPat(Ops.VIEW, src=(UPat(), UPat(Ops.COPY, src=(UPat(), UPat.var("x"),))),))),
+  (UPat(Ops.COPY, name="copy", src=(UPat.var("dest"), UPat(Ops.COPY, src=(UPat(), UPat.var("x"),)))),
    lambda dest,copy,x: copy.replace(src=(dest, x))),
   # no COPY to same device, except clone (arg is True)
-  (UPatScheduled(Ops.COPY, src=(UPat(), UPat(Ops.VIEW, name="copyin")), name="copy"),
-   lambda base,b,copyin,copy: copyin if copyin.device == copy.device and copy.arg is not True else None),
+  (UPat(Ops.COPY, src=(UPat(), UPat.var("copyin")), name="copy"),
+   lambda copyin,copy: copyin if copyin.device == copy.device and copy.arg is not True else None),
   # support for using a contiguous permuted view instead of the parent view if one exists
-  (UPatScheduled(Ops.CONTIGUOUS, name="contig"), found_contiguous),
+  (UPat(Ops.CONTIGUOUS, name="contig"), found_contiguous),
   (UPat(GroupOp.ALU, name="alu"), replace_contiguous),
-])
-
-# ** buffer merging
-
-def merge(ctx:ScheduleContext, v1:UOp, b1:UOp, v2:UOp, b2:UOp) -> UOp:
-  assert v1.st is not None and v2.st is not None and v1.st == v2.st, f"implicit movementop {v1.st} {v2.st}"
-  # if b2 is realized also realize b1
-  if b2 in ctx.realizes:
-    ctx.realizes[b1] = b1
-    del ctx.realizes[b2]
-  # ops referring to b2 now ref to b1
-  ctx.tensor_uops[b1] += ctx.tensor_uops[b2]
-  del ctx.tensor_uops[b2]
-  # merge
-  return v1
-
-def merge_realized(ctx:ScheduleContext, v1:UOp, b1:UOp, v2:UOp, b2:UOp):
-  # early become
-  for luop in ctx.tensor_uops.get(b1, [])+ctx.tensor_uops.get(b2, []): ctx.becomes_map[luop] = b1.view(unwrap(luop.st))
-  return v1
-
-merge_bufs = PatternMatcher([
-  # merge base
-  (UPat(Ops.VIEW, name="v2", src=(UPat(Ops.BUFFER, name="b2"), UPat(Ops.VIEW, name="v1", src=(UPat(Ops.BUFFER, name="b1"), UPat())))), merge),
-  (UPat(Ops.VIEW, name="v2", src=(UPat(Ops.BUFFER, name="b2"), UPat(Ops.VIEW, name="v1", src=(UPat(Ops.BUFFER, name="b1"),)))), merge_realized),
-  # collapse view
-  (UPat(Ops.VIEW, src=(UPat(Ops.BUFFER), UPat(Ops.VIEW, src=(UPat(Ops.BUFFER), UPat())).view(name="mv"))), lambda mv:mv),
-  (UPat(Ops.VIEW, src=(UPat(Ops.BUFFER), UPat(Ops.VIEW, src=(UPat(Ops.BUFFER),)).view(name="mv"))), lambda mv:mv),
 ])
 
 # ** this decides which ops get realized
@@ -541,13 +512,14 @@ remove_movement_ops = PatternMatcher([
 
 @track_rewrites(named=True)
 def create_schedule_with_vars(outs:list[UOp], skip_check:bool=not __debug__) -> tuple[list[ScheduleItem], dict[Variable, int], dict[UOp, UOp]]:
-  if not skip_check: type_verify(list(UOp.sink(*outs).toposort), tensor_uop_spec)
-  # to_uop is removing (many) of the movement ops
-  sink = add_buffers(UOp.sink(*outs), ctx:=ScheduleContext(), cache={})
-  # const folding and fusion
-  sink = graph_rewrite(sink, remove_movement_ops+ops_folding+do_realize, ctx)
-  sink = graph_rewrite(sink, merge_bufs, ctx)
-  # create the scheduler context
+  sink = UOp.sink(*outs)
+  if not skip_check: type_verify(list(sink.toposort), tensor_uop_spec)
+  # symbolic rewrite on the tensor graph
+  tensor_map = graph_rewrite_map(sink, remove_movement_ops+ops_folding, ctx:=ScheduleContext())
+  # then, give whatever tensors are left buffers
+  sink = add_buffers(tensor_map[sink], ctx, cache={})
+  # insert realizes
+  sink = graph_rewrite(sink, do_realize, ctx)
   graph_rewrite(sink, create_ctx, ctx)
   # group realizes into kernels
   store_groups = group_realizes(ctx)
@@ -555,11 +527,14 @@ def create_schedule_with_vars(outs:list[UOp], skip_check:bool=not __debug__) -> 
   # preschedule realize groups
   prescheduled: list[ScheduleItem] = []
   for store_uops in store_groups:
-    if len(stores:=[ctx.realizes[u] for u in store_uops if ctx.realizes[u].op is Ops.STORE]) != 0:
-      prescheduled.append(schedule_uop(UOp.sink(*stores), ctx))
-      # can only schedule once
-      for buf_uop in store_uops:
-        for luop in ctx.tensor_uops[buf_uop]: ctx.becomes_map[luop] = buf_uop.view(unwrap(luop.st))
+    stores = [ctx.realizes[u] for u in store_uops if ctx.realizes[u].op is Ops.STORE]
+    prescheduled.append(schedule_uop(UOp.sink(*stores), ctx))
+    # can only schedule once
+    for buf_uop in store_uops:
+      for luop in ctx.tensor_uops[buf_uop]:
+        tensors = [t for t,v2 in tensor_map.items() if v2 is luop]
+        for t in tensors:
+          ctx.becomes_map[t] = buf_uop.view(unwrap(t.st))
   # do BFS
   schedule_targets = {out:si for si in prescheduled for out in si.outputs}
   graph: defaultdict[ScheduleItem, list[ScheduleItem]] = defaultdict(list)
