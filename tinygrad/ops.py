@@ -402,6 +402,7 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
     return UOp(Ops.VCONST if isinstance(b, tuple) else Ops.CONST, dtype, arg=dtypes.as_const(b, dtype))
   def valid(self, st:ShapeTracker):
     assert self.op in {Ops.CONST, Ops.DEFINE_VAR}, f"can only create VALID from a constant, got {self.op}"
+    if st.views[0].mask is None and self.op is Ops.CONST: return self
     return UOp(Ops.VALID, dtypes.bool, (st.to_uop(),)).where(self, 0)
   @staticmethod
   def range(dtype:DType, start:sint, end:sint, idx:int): return UOp(Ops.RANGE, dtype=dtype, src=(sint_to_uop(start), sint_to_uop(end)), arg=idx)
@@ -1309,4 +1310,6 @@ view_left = merge_views+PatternMatcher([
    lambda e,v: e.replace(src=tuple(s if s.st is None else s.view(v.st) if s is s.base else s.base.view(s.st+v.st) for s in e.src))),
   # early merge VIEW buffer ops
   (UPat(GroupOp.Buffer, name="b").view(name="v"), lambda b,v: b.replace(src=tuple((s.st+v.st).to_uop() if s.op is Ops.VIEW else s for s in b.src))),
+  # masked VIEW(CONST) -> VALID
+  (UPat(Ops.VIEW, name="view", src=(UPat.cvar("x"),)), lambda x,view:x.valid(view.st))
 ])
