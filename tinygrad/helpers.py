@@ -228,8 +228,16 @@ if getenv("RUN_PROCESS_REPLAY"):
   import atexit
   @atexit.register
   def launch_process_replay():
-    os.environ["RUN_PROCESS_REPLAY"] = "0"
-    os.execv(sys.executable, [sys.executable] + [os.path.join(os.path.dirname(__file__), "..", "test", "external", "process_replay", "process_replay.py")])
+    try:
+      os.environ["RUN_PROCESS_REPLAY"] = "0"
+      compare = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]).strip().decode()
+      print(f"diffing {compare} against master")
+      stashed = subprocess.run(["git", "stash", "push", "-m", "temp_replay_stash"], check=False)
+      subprocess.run(["git", "checkout", "master"], check=True)
+      subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "..", "test", "external", "process_replay", "process_replay.py")])
+    finally:
+      subprocess.run(["git", "checkout", compare], check=True)
+      if stashed: subprocess.run(["git", "stash", "pop"], check=True, capture_output=True)
 
 # *** http support ***
 
