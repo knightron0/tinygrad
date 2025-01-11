@@ -218,6 +218,19 @@ def diskcache(func):
     return diskcache_put(table, key, func(*args, **kwargs))
   return wrapper
 
+# *** process replay ***
+
+CAPTURE_PROCESS_REPLAY = getenv("RUN_PROCESS_REPLAY") or getenv("CAPTURE_PROCESS_REPLAY")
+if getenv("RUN_PROCESS_REPLAY"):
+  cur = db_connection()
+  cur.execute(f"drop table if exists kernel_process_replay_{VERSION}")
+  cur.execute(f"drop table if exists schedule_process_replay_{VERSION}")
+  import atexit
+  @atexit.register
+  def launch_process_replay():
+    os.environ["RUN_PROCESS_REPLAY"] = "0"
+    os.execv(sys.executable, [sys.executable] + [os.path.join(os.path.dirname(__file__), "..", "test", "external", "process_replay", "process_replay.py")])
+
 # *** http support ***
 
 def _ensure_downloads_dir() -> pathlib.Path:
