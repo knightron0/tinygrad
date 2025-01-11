@@ -223,8 +223,8 @@ def diskcache(func):
 CAPTURE_PROCESS_REPLAY = getenv("RUN_PROCESS_REPLAY") or getenv("CAPTURE_PROCESS_REPLAY")
 if getenv("RUN_PROCESS_REPLAY"):
   cur = db_connection()
-  cur.execute(f"drop table if exists kernel_process_replay_{VERSION}")
-  cur.execute(f"drop table if exists schedule_process_replay_{VERSION}")
+  cur.execute(f"drop table if exists kernel_process_replay_{VERSION};")
+  cur.execute(f"drop table if exists schedule_process_replay_{VERSION};")
   import atexit
   @atexit.register
   def launch_process_replay():
@@ -233,12 +233,12 @@ if getenv("RUN_PROCESS_REPLAY"):
       os.environ["CAPTURE_PROCESS_REPLAY"] = "0"
       compare = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]).strip().decode()
       print(f"** diffing {compare} against master")
-      stashed = subprocess.run(["git", "stash", "push", "-m", "temp_replay_stash"], check=False)
+      stash_result = subprocess.run(["git", "stash", "push", "-m", "temp_replay_stash"], check=True, capture_output=True, text=True).stdout
       subprocess.run(["git", "checkout", "master"], check=True)
-      subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "..", "test", "external", "process_replay", "process_replay.py")])
+      subprocess.run([sys.executable,os.path.join(os.path.dirname(__file__),"..","test","external","process_replay","process_replay.py")], check=True)
     finally:
       subprocess.run(["git", "checkout", compare], check=True)
-      if stashed: subprocess.run(["git", "stash", "pop"], check=True, capture_output=True)
+      if "Saved" in stash_result: subprocess.run(["git", "stash", "pop"], check=True, capture_output=True)
 
 # *** http support ***
 
