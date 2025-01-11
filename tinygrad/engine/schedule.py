@@ -364,10 +364,6 @@ def group_realizes(ctx:ScheduleContext) -> list[list[UOp]]:
 
 # **** Schedule creation and BFS toposort
 
-class UPatScheduled(UPat):
-  def __init__(self, *args, **kwargs):
-    super().__init__(Ops.VIEW, name="base", src=(UPat(Ops.BUFFER, name="b"), UPat(*args, **{"name":"to_store",**kwargs})))
-
 # ** this is schedule level const folding
 
 def simplify_reduceop(reduce:UOp, x:UOp) -> UOp|None:
@@ -408,12 +404,21 @@ ops_folding = symbolic_simple+PatternMatcher([
   # no COPY to same device, except clone (arg is True)
   (UPat(Ops.COPY, src=(UPat(), UPat.var("copyin")), name="copy"),
    lambda copyin,copy: copyin if copyin.device == copy.device and copy.arg is not True else None),
+  # contiguous folding
+  (UPat(Ops.CONTIGUOUS, src=(UPat(Ops.VIEW, name="vm", src=(UPat.var("x"),)),)),
+   lambda vm,x:x.contiguous().view(vm.st) if vm.st.contiguous and vm.size == x.size and x.op is not Ops.CONST else None),
+  (UPat(Ops.CONTIGUOUS, src=(UPat(Ops.BUFFER, name="x"),)), lambda x:x),
   # support for using a contiguous permuted view instead of the parent view if one exists
   (UPat(Ops.CONTIGUOUS, name="contig"), found_contiguous),
   (UPat(GroupOp.ALU, name="alu"), replace_contiguous),
 ])
 
 # ** this decides which ops get realized
+
+# NOTE: after this point, all UOps are given a BUFFER, the patter of a UOp becomes: VIEW(BUFFER, UPat(...))
+class UPatScheduled(UPat):
+  def __init__(self, *args, **kwargs):
+    super().__init__(Ops.VIEW, name="base", src=(UPat(Ops.BUFFER, name="b"), UPat(*args, **{"name":"to_store",**kwargs})))
 
 def realize(ctx:ScheduleContext, b:UOp, to_store:UOp, **kwargs) -> None: ctx.realizes[b] = to_store
 
@@ -433,8 +438,9 @@ def fold_img_cast(ctx:ScheduleContext, xb:UOp, view:UOp, b:UOp, to_cast:UOp, **k
   del ctx.realizes[b]
   return to_cast.view(unwrap(view.st))
 
+def is_buffer_view(x:UOp): return x.op is Ops.VIEW and len(x.src) == 1 and x.src[0].op is Ops.BUFFER
 def sink_outputs(ctx:ScheduleContext, sink:UOp) -> UOp|None:
-  new_src = tuple(x.base for x in sink.src if x.base.realized is None and not is_constant(x.base))
+  new_src = tuple(x.base for x in sink.src if not is_buffer_view(x.base) and not is_constant(x.base))
   for x in new_src: realize(ctx, x.buf_uop, x)
   return None if new_src == sink.src else UOp(Ops.NOOP) if len(new_src) == 0 else UOp.sink(*new_src)
 
