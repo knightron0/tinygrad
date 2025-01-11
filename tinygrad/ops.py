@@ -453,7 +453,7 @@ class UOp(MathTrait, metaclass=UOpMetaClass):
       return var.replace(src=(UOp(Ops.VIEW, dtypes.void, (UOp(Ops.DEVICE, arg=device),), ShapeTracker.from_shape(shape)),)).bind(val)
     # otherwise it's just a VIEW(BUFFER)
     return UOp(Ops.VIEW, dtype, (UOp.new_buffer(device, (st:=ShapeTracker.from_shape(shape)).size, dtype),), st)
-  def copy_to_device(self, device:str, force=False, clone:bool=False) -> UOp:
+  def copy_to_device(self, device:str, clone:bool=False) -> UOp:
     # no COPY
     if self.device == device and not clone: return self
     # if it's a shrink, do the shrink before the copy with CONTIGUOUS
@@ -959,8 +959,8 @@ spec = PatternMatcher([
   (UPat(Ops.ASSIGN, src=(UPat((Ops.DEFINE_ACC, Ops.DEFINE_GLOBAL)), UPat())), lambda: True),
   (UPat(Ops.ENDRANGE, dtype=dtypes.void, src=(UPat(Ops.RANGE),)), lambda: True),
 
-  # all WMMA has 3 args, <x, w, acc>
-  (UPat(Ops.WMMA, src=(UPat(), UPat(), UPat())), lambda: True),
+  # WMMA has a <a, b, acc>
+  (UPat(Ops.WMMA, src=(UPat(), UPat(), UPat()), name="x"), lambda x: isinstance(x.arg, tuple) and len(x.arg) == 8),
   (UPat(Ops.CONTRACT, name="x"), lambda x: x.dtype.count == prod(y[1] for y in x.arg)),
   (UPat(Ops.UNROLL, name="x"), lambda x: x.src[0].dtype.count == prod(y[1] for y in x.arg)),
 

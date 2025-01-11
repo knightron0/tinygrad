@@ -405,9 +405,6 @@ ops_folding = symbolic_simple+PatternMatcher([
   (UPat(Ops.REDUCE_AXIS, name="reduce", src=(UPat.cvar("x"),)), simplify_reduceop),
   # CONST doesn't need COPY
   (UPat(Ops.COPY, src=(UPat(), UPat.cvar("x"),)), lambda x: x),
-  # no double COPY
-  (UPat(Ops.COPY, name="copy", src=(UPat.var("dest"), UPat(Ops.COPY, src=(UPat(), UPat.var("x"),)))),
-   lambda dest,copy,x: copy.replace(src=(dest, x))),
   # no COPY to same device, except clone (arg is True)
   (UPat(Ops.COPY, src=(UPat(), UPat.var("copyin")), name="copy"),
    lambda copyin,copy: copyin if copyin.device == copy.device and copy.arg is not True else None),
@@ -427,7 +424,7 @@ def realize_view(ctx:ScheduleContext, view:UOp, src:UOp, b:UOp, **kwargs) -> Non
   if len(st.views) == 1 and (m:=st.views[-1].mask) is not None and all_int(src.shape) and resolve(prod(src.shape) >= prod([y-x for x,y in m])):
     return None if can_pad(src, ctx.realizes, set()) else realize(ctx, b, src)
   # early realize before expand
-  if resolve(prod(src.shape) < prod(st.shape)): return realize(ctx, b, src)
+  if resolve(prod(src.shape) < prod(st.shape)) and not getenv("DONT_REALIZE_EXPAND"): return realize(ctx, b, src)
   # otherwise safety check pads
   return None if (all(v.mask is None for v in st.views) or can_pad(src, ctx.realizes, set())) else realize(ctx, b, src)
 
