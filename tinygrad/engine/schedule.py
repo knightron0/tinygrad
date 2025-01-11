@@ -411,6 +411,8 @@ ops_folding = symbolic_simple+PatternMatcher([
   # support for using a contiguous permuted view instead of the parent view if one exists
   (UPat(Ops.CONTIGUOUS, name="contig"), found_contiguous),
   (UPat(GroupOp.ALU, name="alu"), replace_contiguous),
+  # sink folding
+  (UPat(Ops.SINK, name="root"), lambda root: root.replace(src=a) if (a:=tuple(x.base for x in root.src)) != root.src else None),
 ])
 
 # ** this decides which ops get realized
